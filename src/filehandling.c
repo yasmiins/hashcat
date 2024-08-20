@@ -30,9 +30,34 @@ _Static_assert(sizeof (size_t) == sizeof (SizeT), "Check why sizeof(size_t) != s
 #define HCFILE_CHUNK_SIZE 4 * 1024 * 1024
 #endif
 
+
 static bool xz_initialized = false;
 
 static const ISzAlloc xz_alloc = { hc_lzma_alloc, hc_lzma_free };
+
+struct encrdsa_file
+{
+    char       signature[8];
+    uint32_t   version;
+    uint32_t   blockIvLen;
+    uint32_t   blockMode;
+    uint32_t   blockAlgorithm;
+    uint32_t   keyBits;
+    uint32_t   ivkeyAlgorithm;
+    uint32_t   ivkeyBits;
+    char       unknownGuid[16];
+    uint32_t   bytesPerBlock;
+    uint64_t   dataLen;
+    uint64_t   offsetToDataStart;
+    uint32_t   nritems;
+    struct {
+        uint32_t itemtype;
+        uint64_t itemoffset;
+        uint64_t itemsize;
+    } keyitems[10];
+    uint8_t   aeskey[32];
+    uint8_t   hmackey[20];
+};
 
 struct xzfile
 {
@@ -116,6 +141,7 @@ bool hc_fopen (HCFILE *fp, const char *path, const char *mode)
   bool is_gzip = false;
   bool is_zip  = false;
   bool is_xz   = false;
+  bool is_edmg = false;
   bool is_fifo = hc_path_is_fifo (path);
 
   if (is_fifo == false)
@@ -131,7 +157,7 @@ bool hc_fopen (HCFILE *fp, const char *path, const char *mode)
         if (check[0] == 0x1f && check[1] == 0x8b && check[2] == 0x08)                     is_gzip = true;
         if (check[0] == 0x50 && check[1] == 0x4b && check[2] == 0x03 && check[3] == 0x04) is_zip  = true;
         if (memcmp (check, XZ_SIG, XZ_SIG_SIZE) == 0)                                     is_xz   = true;
-
+        if (memcmp(check, "encrcdsa", 8) == 0)                                 is_edmg = true;
         // compressed files with BOM will be undetected!
 
         if (is_gzip == false && is_zip == false && is_xz == false)
@@ -271,6 +297,51 @@ bool hc_fopen (HCFILE *fp, const char *path, const char *mode)
     xfp->inProcessed = inLen;
     fp->xfp = xfp;
   }
+  if (is_edmg)
+  {
+    // Initialize the encrdsa_file structure
+    encrdsa_file_t edmg_file;
+    memset(&edmg_file, 0, sizeof(encrdsa_file_t));
+
+    // Load the encrdsa_file from the file
+    lseek(fp->fd, 0, SEEK_SET);  // Reset the file pointer to the start
+    unsigned char header[0x10000] = {0};
+    if (read(fp->fd, header, sizeof(header)) != sizeof(header)) return false;
+
+    // Parsing the header
+    memcpy(edmg_file.signature, header, 8);
+    edmg_file.version = ntohl(*(uint32_t *)(header + 8));
+    edmg_file.blockIvLen = ntohl(*(uint32_t *)(header + 12));
+    edmg_file.blockMode = ntohl(*(uint32_t *)(header + 16));
+    edmg_file.blockAlgorithm = ntohl(*(uint32_t *)(header + 20));
+    edmg_file.keyBits = ntohl(*(uint32_t *)(header + 24));
+    edmg_file.ivkeyAlgorithm = ntohl(*(uint32_t *)(header + 28));
+    edmg_file.ivkeyBits = ntohl(*(uint32_t *)(header + 32));
+    memcpy(edmg_file.unknownGuid, header + 36, 16);
+    edmg_file.bytesPerBlock = ntohl(*(uint32_t *)(header + 52));
+    edmg_file.dataLen = be64toh(*(uint64_t *)(header + 56));
+    edmg_file.offsetToDataStart = be64toh(*(uint64_t *)(header + 64));
+    edmg_file.nritems = ntohl(*(uint32_t *)(header + 72));
+
+    for (uint32_t i = 0; i < edmg_file.nritems; i++)
+    {
+      uint32_t offset = 76 + i * 20;
+      edmg_file.keyitems[i].itemtype = ntohl(*(uint32_t *)(header + offset));
+      edmg_file.keyitems[i].itemoffset = be64toh(*(uint64_t *)(header + offset + 4));
+      edmg_file.keyitems[i].itemsize = be64toh(*(uint64_t *)(header + offset + 12));
+    }
+
+    // Validate the encrdsa_file
+    if (strncmp(edmg_file.signature, "encrcdsa", 8) != 0 || edmg_file.version != 2)
+    {
+      close(fp->fd);
+      return false;
+    }
+
+    lseek(fp->fd, 0, SEEK_SET); // Reset file pointer to start
+  }
+
+
   else
   {
     if ((fp->pfp = fdopen (fp->fd, mode)) == NULL) return false;

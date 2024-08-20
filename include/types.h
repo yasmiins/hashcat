@@ -2729,6 +2729,31 @@ typedef struct hashcat_status
 
 } hashcat_status_t;
 
+typedef struct encrdsa_file encrdsa_file_t;
+
+typedef struct encrdsa_file
+{
+    char       signature[8];
+    uint32_t   version;
+    uint32_t   blockIvLen;
+    uint32_t   blockMode;
+    uint32_t   blockAlgorithm;
+    uint32_t   keyBits;
+    uint32_t   ivkeyAlgorithm;
+    uint32_t   ivkeyBits;
+    char       unknownGuid[16];
+    uint32_t   bytesPerBlock;
+    uint64_t   dataLen;
+    uint64_t   offsetToDataStart;
+    uint32_t   nritems;
+    struct {
+        uint32_t itemtype;
+        uint64_t itemoffset;
+        uint64_t itemsize;
+    } keyitems[10];
+    uint8_t   aeskey[32]; // 256 bits maximum
+    uint8_t   hmackey[20]; // SHA1 HMAC key length
+};
 typedef struct status_ctx
 {
   /**
